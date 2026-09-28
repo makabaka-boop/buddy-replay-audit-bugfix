@@ -13,22 +13,62 @@
   const ROW_H = 36;
   const NODE_H = 24;
 
-  function buildNodes() {
-    return [
-      ...freeBlocks.map((b) => ({ ...b, key: b.order + ':' + b.addr, kind: 'free' })),
-      ...allocs.map((a) => ({ ...a, key: a.order + ':' + a.addr, kind: 'alloc' })),
-    ];
+  const nodeKey = (order, addr) => `${order}:${addr}`;
+
+  function buildTree(k, capacity, freeBlocks, allocs) {
+    const byKey = new Map();
+
+    const root = { addr: 0, size: capacity, order: k, key: nodeKey(k, 0), kind: 'internal' };
+    byKey.set(root.key, root);
+
+    for (const leaf of freeBlocks) {
+      const node = { ...leaf, key: nodeKey(leaf.order, leaf.addr), kind: 'free' };
+      byKey.set(node.key, node);
+    }
+    for (const leaf of allocs) {
+      const node = { ...leaf, key: nodeKey(leaf.order, leaf.addr), kind: 'alloc' };
+      byKey.set(node.key, node);
+    }
+
+    // Reconstruct every buddy that was split on the paths from the current
+    // leaves back to the root, so intermediate states remain auditable.
+    for (const leaf of [...freeBlocks, ...allocs]) {
+      let current = { ...leaf };
+      while (current.order < k) {
+        const parentOrder = current.order + 1;
+        const parentAddr = current.addr & ~((1 << parentOrder) - 1);
+        const parentKey = nodeKey(parentOrder, parentAddr);
+        if (!byKey.has(parentKey)) {
+          byKey.set(parentKey, {
+            addr: parentAddr,
+            size: 1 << parentOrder,
+            order: parentOrder,
+            key: parentKey,
+            kind: 'internal',
+          });
+        }
+        current = { addr: parentAddr, order: parentOrder };
+      }
+    }
+
+    const nodes = [...byKey.values()].sort((a, b) => b.order - a.order || a.addr - b.addr);
+    const edges = nodes
+      .filter((n) => n.order < k)
+      .map((n) => {
+        const parentAddr = n.addr & ~((1 << (n.order + 1)) - 1);
+        return {
+          from: byKey.get(nodeKey(n.order + 1, parentAddr)),
+          to: n,
+        };
+      })
+      .filter((e) => e.from);
+
+    return { nodes, edges };
   }
 
-  $: nodes = buildNodes(k, freeBlocks, allocs);
-  $: nodeByKey = new Map(nodes.map((n) => [n.key, n]));
-  $: edges = nodes
-    .filter((n) => n.order < k)
-    .map((n) => {
-      const pAddr = n.addr & ~((1 << (n.order + 1)) - 1);
-      return { from: nodeByKey.get(n.order + 1 + ':' + pAddr), to: n };
-    })
-    .filter((e) => e.from);
+  $: tree = buildTree(k, capacity, freeBlocks, allocs);
+  $: nodes = tree.nodes;
+  $: edges = tree.edges;
 
   const cx = (n) => ((n.addr + n.size / 2) / capacity) * W;
   const yTop = (order) => (k - order) * ROW_H + 10;

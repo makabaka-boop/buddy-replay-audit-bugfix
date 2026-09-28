@@ -51,32 +51,59 @@ func orderFor(size int) int {
 // splits it down, keeping the low-address half at every level. On OOM it
 // reports ok=false and leaves the state untouched.
 func (a *allocator) allocate(id string, size int) (Block, bool) {
-    need := orderFor(size)
-    for o := a.k; o >= need; o-- {
-        if len(a.free[o]) == 0 { continue }
-        addr := a.free[o][0]
-        a.free[o] = a.free[o][1:]
-        for o > need {
-            o--
-            a.free[o] = insertSorted(a.free[o], addr)
-            addr += 1 << o
-        }
-        b := Block{Addr: addr, Size: 1 << need, Order: need}
-        a.allocs[id] = b
-        a.reqSize[id] = size
-        return b, true
-    }
-    return Block{}, false
+	need := orderFor(size)
+
+	// Search from the smallest fitting order upward. Each free list is kept in
+	// address order, so its first entry is the lowest-address block.
+	var addr int
+	chosen := -1
+	for o := need; o <= a.k; o++ {
+		if len(a.free[o]) > 0 {
+			addr = a.free[o][0]
+			a.free[o] = a.free[o][1:]
+			chosen = o
+			break
+		}
+	}
+	if chosen == -1 {
+		return Block{}, false
+	}
+
+	// Split the chosen block down to the needed order. The low half remains the
+	// candidate for the next split; the high half is published as a free buddy.
+	for o := chosen; o > need; o-- {
+		highAddr := addr + 1<<(o-1)
+		a.free[o-1] = insertSorted(a.free[o-1], highAddr)
+	}
+
+	b := Block{Addr: addr, Size: 1 << need, Order: need}
+	a.allocs[id] = b
+	a.reqSize[id] = size
+	return b, true
 }
 
 // release removes id's allocation and merges with its buddy level by level
 // while the buddy is entirely free. Callers must guarantee id is live.
 func (a *allocator) release(id string) Block {
-    b := a.allocs[id]
-    delete(a.allocs, id)
-    delete(a.reqSize, id)
-    a.free[b.Order] = insertSorted(a.free[b.Order], b.Addr)
-    return b
+	b := a.allocs[id]
+	delete(a.allocs, id)
+	delete(a.reqSize, id)
+
+	addr, order := b.Addr, b.Order
+	for order < a.k {
+		buddy := addr ^ (1 << order)
+		i := searchAddr(a.free[order], buddy)
+		if i == -1 {
+			break
+		}
+		a.free[order] = removeAt(a.free[order], i)
+		if buddy < addr {
+			addr = buddy
+		}
+		order++
+	}
+	a.free[order] = insertSorted(a.free[order], addr)
+	return b
 }
 
 // snapshot is a consistent view of the allocator after (or before) an event.
@@ -90,17 +117,22 @@ type snapshot struct {
 }
 
 func (a *allocator) takeSnapshot() snapshot {
-    s := snapshot{FreeCounts: make([]int, a.k+1), FreeBlocks: []Block{}}
-    for o, addresses := range a.free {
-        s.FreeCounts[o] = len(addresses)
-        s.TotalFree += len(addresses) << o
-        if len(addresses) > 0 { s.MaxFreeBlock = 1 << o }
-        for _, addr := range addresses {
-            s.FreeBlocks = append(s.FreeBlocks, Block{Addr: addr, Size: 1 << o, Order: o})
-        }
-    }
-    s.ExternalFrag = s.TotalFree - s.MaxFreeBlock
-    return s
+	s := snapshot{FreeCounts: make([]int, a.k+1), FreeBlocks: []Block{}}
+	for o, addresses := range a.free {
+		s.FreeCounts[o] = len(addresses)
+		s.TotalFree += len(addresses) << o
+		if len(addresses) > 0 {
+			s.MaxFreeBlock = 1 << o
+		}
+		for _, addr := range addresses {
+			s.FreeBlocks = append(s.FreeBlocks, Block{Addr: addr, Size: 1 << o, Order: o})
+		}
+	}
+	for id, b := range a.allocs {
+		s.InternalFrag += b.Size - a.reqSize[id]
+	}
+	s.ExternalFrag = s.TotalFree - s.MaxFreeBlock
+	return s
 }
 
 func insertSorted(xs []int, v int) []int {
