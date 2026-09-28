@@ -55,31 +55,75 @@ func errf(format string, args ...any) *apiError {
 // satisfied is a valid OOM event: it is recorded with status "oom" and the
 // state carries on unchanged.
 func replay(req replayRequest) (replayResponse, *apiError) {
-    if req.CapacityOrder < minOrder || req.CapacityOrder > maxOrder {
-        return replayResponse{}, errf("capacityOrder must be between %d and %d", minOrder, maxOrder)
-    }
-    a := newAllocator(req.CapacityOrder)
-    res := replayResponse{Capacity: a.capacity, CapacityOrder: req.CapacityOrder,
-        Initial: a.takeSnapshot(), Events: []eventResult{}}
-    for _, ev := range req.Events {
-        item := eventResult{ID: ev.ID, Type: ev.Type, AllocID: ev.AllocID}
-        if ev.Type == "allocate" {
-            item.Requested = ev.Size
-            if block, ok := a.allocate(ev.AllocID, ev.Size); ok {
-                item.Status = "ok"
-                item.Block = &block
-            } else {
-                item.Status = "oom"
-            }
-        } else if ev.Type == "free" {
-            block := a.release(ev.AllocID)
-            item.Status = "ok"
-            item.Block = &block
-        } else {
-            item.Status = "ok"
-        }
-        item.snapshot = a.takeSnapshot()
-        res.Events = append(res.Events, item)
-    }
-    return res, nil
+	if req.CapacityOrder < minOrder || req.CapacityOrder > maxOrder {
+		return replayResponse{}, errf("capacityOrder must be between %d and %d", minOrder, maxOrder)
+	}
+	if len(req.Events) > maxEvents {
+		return replayResponse{}, errf("at most %d events per batch", maxEvents)
+	}
+
+	capacity := 1 << req.CapacityOrder
+	seenEventIDs := make(map[string]bool, len(req.Events))
+	seenAllocIDs := make(map[string]bool, len(req.Events))
+	for i, ev := range req.Events {
+		if ev.ID == "" {
+			return replayResponse{}, errf("event at index %d has an empty id", i)
+		}
+		if seenEventIDs[ev.ID] {
+			return replayResponse{}, errf("duplicate event id %q", ev.ID)
+		}
+		seenEventIDs[ev.ID] = true
+
+		if ev.AllocID == "" {
+			return replayResponse{}, errf("event %s has an empty allocation id", ev.ID)
+		}
+
+		switch ev.Type {
+		case "allocate":
+			if seenAllocIDs[ev.AllocID] {
+				return replayResponse{}, errf("duplicate allocation id %q", ev.AllocID)
+			}
+			seenAllocIDs[ev.AllocID] = true
+			if ev.Size < 1 || ev.Size > capacity {
+				return replayResponse{}, errf(
+					"event %s: size must be between 1 and %d, got %d", ev.ID, capacity, ev.Size)
+			}
+		case "free":
+		default:
+			return replayResponse{}, errf("event %s: unknown event type %q", ev.ID, ev.Type)
+		}
+	}
+
+	a := newAllocator(req.CapacityOrder)
+	live := make(map[string]bool, len(req.Events))
+	res := replayResponse{
+		Capacity:      a.capacity,
+		CapacityOrder: req.CapacityOrder,
+		Initial:       a.takeSnapshot(),
+		Events:        []eventResult{},
+	}
+	for _, ev := range req.Events {
+		item := eventResult{ID: ev.ID, Type: ev.Type, AllocID: ev.AllocID}
+		if ev.Type == "allocate" {
+			item.Requested = ev.Size
+			if block, ok := a.allocate(ev.AllocID, ev.Size); ok {
+				live[ev.AllocID] = true
+				item.Status = "ok"
+				item.Block = &block
+			} else {
+				item.Status = "oom"
+			}
+		} else {
+			if !live[ev.AllocID] {
+				return replayResponse{}, errf("event %s: unknown or already-freed allocation id %q", ev.ID, ev.AllocID)
+			}
+			delete(live, ev.AllocID)
+			block := a.release(ev.AllocID)
+			item.Status = "ok"
+			item.Block = &block
+		}
+		item.snapshot = a.takeSnapshot()
+		res.Events = append(res.Events, item)
+	}
+	return res, nil
 }

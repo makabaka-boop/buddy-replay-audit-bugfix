@@ -51,32 +51,50 @@ func orderFor(size int) int {
 // splits it down, keeping the low-address half at every level. On OOM it
 // reports ok=false and leaves the state untouched.
 func (a *allocator) allocate(id string, size int) (Block, bool) {
-    need := orderFor(size)
-    for o := a.k; o >= need; o-- {
-        if len(a.free[o]) == 0 { continue }
-        addr := a.free[o][0]
-        a.free[o] = a.free[o][1:]
-        for o > need {
-            o--
-            a.free[o] = insertSorted(a.free[o], addr)
-            addr += 1 << o
-        }
-        b := Block{Addr: addr, Size: 1 << need, Order: need}
-        a.allocs[id] = b
-        a.reqSize[id] = size
-        return b, true
-    }
-    return Block{}, false
+	need := orderFor(size)
+	for o := need; o <= a.k; o++ {
+		if len(a.free[o]) == 0 {
+			continue
+		}
+		addr := a.free[o][0]
+		a.free[o] = a.free[o][1:]
+
+		// Split from the top down. Keep the low-address half for the
+		// allocation and release its high-address buddy as free.
+		for current := o; current > need; current-- {
+			buddyAddr := addr + 1<<(current-1)
+			a.free[current-1] = insertSorted(a.free[current-1], buddyAddr)
+		}
+
+		b := Block{Addr: addr, Size: 1 << need, Order: need}
+		a.allocs[id] = b
+		a.reqSize[id] = size
+		return b, true
+	}
+	return Block{}, false
 }
 
 // release removes id's allocation and merges with its buddy level by level
 // while the buddy is entirely free. Callers must guarantee id is live.
 func (a *allocator) release(id string) Block {
-    b := a.allocs[id]
-    delete(a.allocs, id)
-    delete(a.reqSize, id)
-    a.free[b.Order] = insertSorted(a.free[b.Order], b.Addr)
-    return b
+	b := a.allocs[id]
+	delete(a.allocs, id)
+	delete(a.reqSize, id)
+
+	addr := b.Addr
+	o := b.Order
+	for o < a.k {
+		buddy := addr ^ (1 << o)
+		idx := searchAddr(a.free[o], buddy)
+		if idx < 0 {
+			break
+		}
+		a.free[o] = removeAt(a.free[o], idx)
+		addr &^= 1 << o
+		o++
+	}
+	a.free[o] = insertSorted(a.free[o], addr)
+	return b
 }
 
 // snapshot is a consistent view of the allocator after (or before) an event.
@@ -90,17 +108,22 @@ type snapshot struct {
 }
 
 func (a *allocator) takeSnapshot() snapshot {
-    s := snapshot{FreeCounts: make([]int, a.k+1), FreeBlocks: []Block{}}
-    for o, addresses := range a.free {
-        s.FreeCounts[o] = len(addresses)
-        s.TotalFree += len(addresses) << o
-        if len(addresses) > 0 { s.MaxFreeBlock = 1 << o }
-        for _, addr := range addresses {
-            s.FreeBlocks = append(s.FreeBlocks, Block{Addr: addr, Size: 1 << o, Order: o})
-        }
-    }
-    s.ExternalFrag = s.TotalFree - s.MaxFreeBlock
-    return s
+	s := snapshot{FreeCounts: make([]int, a.k+1), FreeBlocks: []Block{}}
+	for id, b := range a.allocs {
+		s.InternalFrag += b.Size - a.reqSize[id]
+	}
+	for o, addresses := range a.free {
+		s.FreeCounts[o] = len(addresses)
+		s.TotalFree += len(addresses) << o
+		if len(addresses) > 0 {
+			s.MaxFreeBlock = 1 << o
+		}
+		for _, addr := range addresses {
+			s.FreeBlocks = append(s.FreeBlocks, Block{Addr: addr, Size: 1 << o, Order: o})
+		}
+	}
+	s.ExternalFrag = s.TotalFree - s.MaxFreeBlock
+	return s
 }
 
 func insertSorted(xs []int, v int) []int {

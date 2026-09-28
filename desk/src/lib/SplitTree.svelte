@@ -14,10 +14,30 @@
   const NODE_H = 24;
 
   function buildNodes() {
-    return [
-      ...freeBlocks.map((b) => ({ ...b, key: b.order + ':' + b.addr, kind: 'free' })),
-      ...allocs.map((a) => ({ ...a, key: a.order + ':' + a.addr, kind: 'alloc' })),
-    ];
+    const byKey = new Map();
+    const addNode = (addr, size, order, kind, id) => {
+      const key = `${order}:${addr}`;
+      if (!byKey.has(key)) {
+        byKey.set(key, { addr, size, order, kind, id, key });
+      }
+    };
+    const addParents = (leaf) => {
+      let addr = leaf.addr;
+      for (let order = leaf.order; order < k; order++) {
+        addr &= ~(1 << order);
+        addNode(addr, 1 << (order + 1), order + 1, 'internal');
+      }
+    };
+
+    for (const b of freeBlocks) {
+      addNode(b.addr, b.size, b.order, 'free');
+      addParents(b);
+    }
+    for (const a of allocs) {
+      addNode(a.addr, a.size, a.order, 'alloc', a.id);
+      addParents(a);
+    }
+    return [...byKey.values()];
   }
 
   $: nodes = buildNodes(k, freeBlocks, allocs);

@@ -81,11 +81,10 @@
     const live = new Map();
     for (let i = 0; i <= step && i < events.length; i++) {
       const ev = events[i];
-      if (ev.type === 'free') continue;
-      if (ev.type === 'allocate') {
-        live.set(ev.allocId, { ...ev.block, id: ev.allocId, requested: ev.requested });
-      } else {
+      if (ev.type === 'free') {
         live.delete(ev.allocId);
+      } else if (ev.type === 'allocate' && ev.status === 'ok' && ev.block) {
+        live.set(ev.allocId, { ...ev.block, id: ev.allocId, requested: ev.requested });
       }
     }
     return [...live.values()];
