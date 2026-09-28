@@ -1,0 +1,49 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f1420;
+  --panel: #171e2e;
+  --panel-2: #1d2638;
+  --border: #2b3752;
+  --text: #dbe4f5;
+  --muted: #8b98b8;
+  --accent: #5aa9ff;
+  --ok: #3fce8f;
+  --oom: #f5a623;
+  --err: #ff6b6b;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+#app { min-height: 100vh; }
+
+button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.4; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #0b1220; font-weight: 600; }
+
+input, select {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 13px;
+}
+input:focus, select:focus { outline: 1px solid var(--accent); }
+
+.mono { font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace; }

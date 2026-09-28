@@ -1,0 +1,12 @@
+services:
+  allocator:
+    build: ./allocator
+    ports:
+      - "8080:8080"
+
+  desk:
+    build: ./desk
+    ports:
+      - "5173:80"
+    depends_on:
+      - allocator
